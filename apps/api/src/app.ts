@@ -1,0 +1,36 @@
+import express from 'express';
+import cookieParser from 'cookie-parser';
+import cors from 'cors';
+import fs from 'node:fs';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { config } from './config.js';
+import { authenticate, originCheck } from './auth.js';
+import { router, errorHandler } from './routes.js';
+
+export function createApp() {
+  const app = express();
+  if (config.isProd) app.set('trust proxy', 1);
+  app.disable('x-powered-by');
+  app.use((req, res, next) => { req.id = randomUUID(); res.setHeader('X-Request-Id', req.id); next(); });
+  app.use((_req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Referrer-Policy', 'same-origin');
+    next();
+  });
+  app.use(cors({ origin: [config.frontendUrl, config.apiBaseUrl], credentials: true }));
+  app.use(express.json({ limit: '100kb' }));
+  app.use(cookieParser());
+  app.use('/api/v1', originCheck, authenticate, router);
+  app.use('/api', (_req, res) => res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Not found.', details: {} } }));
+
+  const web = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../web/dist');
+  if (fs.existsSync(web)) {
+    app.use(express.static(web, { index: false, maxAge: '1h' }));
+    app.get('*', (_req, res) => { res.setHeader('Cache-Control', 'no-cache'); res.sendFile(path.join(web, 'index.html')); });
+  }
+  app.use(errorHandler);
+  return app;
+}
