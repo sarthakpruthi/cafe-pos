@@ -2,7 +2,8 @@
 // Every cafe gets its own sign-in domain, so the same username can be used in different cafes.
 import readline from 'node:readline/promises';
 import { randomBytes } from 'node:crypto';
-import { initDb, db, closeDb } from './db.js';
+import { db } from './db.js';
+import { initDb, closeDb } from './drivers/node.js';
 import { config } from './config.js';
 import { authMode, staffAuth } from './supabase.js';
 

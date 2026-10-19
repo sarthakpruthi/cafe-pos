@@ -1,6 +1,6 @@
 import { createApp } from './app.js';
 import { config } from './config.js';
-import { initDb } from './db.js';
+import { initDb } from './drivers/node.js';
 import { authMode } from './supabase.js';
 
 await initDb({ url: config.databaseUrl, dataDir: config.dataDir });

@@ -1,6 +1,7 @@
 import type { AddressInfo } from 'node:net';
 import { randomUUID } from 'node:crypto';
-import { initDb, db } from '../src/db.js';
+import { db } from '../src/db.js';
+import { initDb } from '../src/drivers/node.js';
 import { createApp } from '../src/app.js';
 import { newToken } from '../src/services/admin.js';
 import { signStaffToken, useMemoryAuth, type StaffRole } from '../src/supabase.js';

@@ -2,7 +2,8 @@
 // Safe to run again; it only adds what is missing.
 import readline from 'node:readline/promises';
 import { randomBytes } from 'node:crypto';
-import { initDb, db, closeDb } from './db.js';
+import { db } from './db.js';
+import { initDb, closeDb } from './drivers/node.js';
 import { config } from './config.js';
 import { newToken } from './services/admin.js';
 import { authMode, staffAuth } from './supabase.js';

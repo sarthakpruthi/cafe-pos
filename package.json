@@ -12,6 +12,14 @@
     "cafe": "npm run cafe -w apps/api",
     "passwd": "npm run passwd -w apps/api",
     "test": "npm run test -w apps/api",
-    "typecheck": "npm run typecheck -w apps/api && npm run typecheck -w apps/web"
+    "typecheck": "npm run typecheck -w apps/api && npm run typecheck -w apps/web",
+    "migrate": "npm run migrate -w apps/api",
+    "cf:typecheck": "tsc -p worker/tsconfig.json",
+    "cf:preview": "npm run build -w apps/web && wrangler dev",
+    "deploy": "npm run build -w apps/web && wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261019.1",
+    "wrangler": "^4.151.1"
   }
 }

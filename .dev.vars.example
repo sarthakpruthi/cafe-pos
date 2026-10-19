@@ -1,0 +1,14 @@
+# Local values for `npm run cf:preview` (wrangler dev). Copy to `.dev.vars` — never commit it.
+# These fill in the secrets that wrangler.jsonc deliberately leaves out (see docs/DEPLOY_CLOUDFLARE.md).
+#
+# The Worker reads its database connection from the Hyperdrive binding, not from DATABASE_URL, so
+# local development needs a reachable Postgres for Hyperdrive's local emulation instead:
+#
+#   CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE=postgresql://user:password@host:5432/db
+#
+# `npm run dev` (tsx + Vite) uses the repo-root .env and does not read this file.
+AUTH_SECRET=
+SUPABASE_URL=
+SUPABASE_SERVICE_ROLE_KEY=
+SUPABASE_JWT_SECRET=
+ADMIN_SETUP_KEY=

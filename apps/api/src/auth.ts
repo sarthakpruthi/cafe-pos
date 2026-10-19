@@ -85,8 +85,22 @@ export function originCheck(req: Request, _res: Response, next: NextFunction) {
 
 // ---- Simple in-memory rate limiting (per process; fine for one cafe) ----
 const hits = new Map<string, { n: number; reset: number }>();
+
+// Removed expired windows occasionally. Started on first use: timers may not be created at module
+// scope on Workers, and this cheap sweep is only worth having once requests are arriving anyway.
+let sweep: ReturnType<typeof setInterval> | null = null;
+function ensureSweep() {
+  if (sweep) return;
+  sweep = setInterval(() => {
+    const now = Date.now();
+    for (const [k, v] of hits) if (v.reset < now) hits.delete(k);
+  }, 60_000);
+  (sweep as unknown as { unref?: () => void }).unref?.();
+}
+
 export function rateLimit(name: string, max: number, windowMs: number) {
   return (req: Request, _res: Response, next: NextFunction) => {
+    ensureSweep();
     const key = `${name}:${req.ip}`;
     const now = Date.now();
     const h = hits.get(key);
@@ -95,4 +109,3 @@ export function rateLimit(name: string, max: number, windowMs: number) {
     next();
   };
 }
-setInterval(() => { const now = Date.now(); for (const [k, v] of hits) if (v.reset < now) hits.delete(k); }, 60_000).unref();

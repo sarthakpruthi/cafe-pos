@@ -9,6 +9,7 @@
     "start": "node dist/index.js",
     "setup": "tsx src/setup.ts",
     "cafe": "tsx src/cafe.ts",
+    "migrate": "tsx src/migrate.ts",
     "passwd": "tsx src/passwd.ts",
     "test": "tsx --test tests/*.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"

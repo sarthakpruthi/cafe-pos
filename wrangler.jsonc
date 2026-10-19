@@ -1,0 +1,58 @@
+{
+  // Cloudflare deployment (Workers Free plan). One Worker serves the built React app and the API.
+  //
+  // Single origin on purpose: apps/web/src/shared/api.ts and live.ts call `/api/v1` on the page's
+  // own origin, the API's originCheck only trusts FRONTEND_URL/API_BASE_URL, and QR codes are built
+  // from FRONTEND_URL. Splitting web and API across two hostnames would break all three.
+  //
+  // Everything here is on the free tier: Workers, static assets, Durable Objects (SQLite) and
+  // Hyperdrive. Containers are NOT used (they require the paid Workers plan).
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "cafe-ordering",
+  "main": "worker/index.ts",
+  // Set to today's date (see https://developers.cloudflare.com/workers/configuration/compatibility-dates/).
+  "compatibility_date": "2026-10-19",
+  "compatibility_flags": ["nodejs_compat"],
+  "upload_source_maps": true,
+  "observability": {
+    "enabled": true
+  },
+  // Express imports body-parser (→ raw-body → iconv-lite) as soon as it loads, and iconv-lite's
+  // browser build cannot run on workerd. See worker/iconv-lite.ts for the details.
+  "alias": {
+    "iconv-lite": "./worker/iconv-lite.ts"
+  },
+  "assets": {
+    // Built by `npm run deploy` (npm run build -w apps/web). Must exist before `wrangler deploy`.
+    "directory": "apps/web/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    // Only /api/* invokes the Worker; every other path is served straight from the assets.
+    "run_worker_first": ["/api/*"]
+  },
+  // Holds the open SSE streams and fans events out to them (see worker/realtime-do.ts).
+  "durable_objects": {
+    "bindings": [{ "name": "REALTIME", "class_name": "RealtimeHub" }]
+  },
+  "exports": {
+    "RealtimeHub": { "type": "durable-object", "storage": "sqlite" }
+  },
+  // Postgres connection pooling for Workers. Create it once with:
+  //   npx wrangler hyperdrive create cafe-db --connection-string "postgresql://...supabase..."
+  // then paste the id below. For local `wrangler dev`, add a `localConnectionString`.
+  "hyperdrive": [
+    { "binding": "HYPERDRIVE", "id": "<your-hyperdrive-id>" }
+  ],
+  // Non-secret settings. Secrets go in with `wrangler secret put` (see docs/DEPLOY_CLOUDFLARE.md).
+  "vars": {
+    "NODE_ENV": "production",
+    "CAFE_NAME": "The TeaPot Cafe",
+    "CAFE_TIMEZONE": "Asia/Kolkata",
+    "STAFF_EMAIL_DOMAIN": "cafe.local",
+    "SUPABASE_URL": "",
+    // Replace both with the deployed Worker URL (or your custom domain) BEFORE printing QR codes,
+    // then deploy again. They must match the browser origin exactly.
+    "FRONTEND_URL": "https://cafe-ordering.<YOUR-WORKERS-SUBDOMAIN>.workers.dev",
+    "API_BASE_URL": "https://cafe-ordering.<YOUR-WORKERS-SUBDOMAIN>.workers.dev"
+  }
+}
