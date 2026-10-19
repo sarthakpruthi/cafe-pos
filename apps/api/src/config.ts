@@ -9,20 +9,40 @@ for (const file of [path.resolve(here, '../../..', '.env'), path.resolve(here, '
 }
 
 const env = process.env;
+/** A blank value in .env means "not set" — an empty AUTH_SECRET must not become an empty key. */
+const str = (v: string | undefined) => (v && v.trim() ? v : undefined);
+
 const isProd = env.NODE_ENV === 'production';
-if (isProd && (!env.AUTH_SECRET || env.AUTH_SECRET.length < 24 || env.AUTH_SECRET.startsWith('replace-with'))) {
+const authSecret = str(env.AUTH_SECRET);
+if (isProd && (!authSecret || authSecret.length < 24 || authSecret.startsWith('replace-with'))) {
   throw new Error('AUTH_SECRET must be set to a long random value in production.');
 }
+// Staff sign-in runs on Supabase Auth, so production needs the project URL and the service role key
+// (the key is only ever used on the server, to create staff logins and reset passwords).
+const supabaseUrl = str(env.SUPABASE_URL)?.replace(/\/$/, '');
+const serviceRoleKey = str(env.SUPABASE_SERVICE_ROLE_KEY);
+if (isProd && !supabaseUrl) throw new Error('SUPABASE_URL must be set in production: staff sign-in uses Supabase Auth.');
+if (isProd && !serviceRoleKey) throw new Error('SUPABASE_SERVICE_ROLE_KEY must be set in production.');
+const databaseUrl = str(env.DATABASE_URL);
+
 export const config = {
   isProd,
-  port: Number(env.PORT ?? 4000),
-  databaseUrl: env.DATABASE_URL && !env.DATABASE_URL.includes('...') ? env.DATABASE_URL : undefined,
-  dataDir: env.DATA_DIR ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../data/pgdata'),
-  frontendUrl: (env.FRONTEND_URL ?? 'http://localhost:4000').replace(/\/$/, ''),
-  apiBaseUrl: (env.API_BASE_URL ?? 'http://localhost:4000').replace(/\/$/, ''),
-  authSecret: env.AUTH_SECRET ?? 'dev-only-secret-change-me-dev-only-secret',
-  cafeName: env.CAFE_NAME ?? 'My Cafe',
-  timezone: env.CAFE_TIMEZONE ?? 'Asia/Kolkata',
-  maxTaxRate: Number(env.MAX_TAX_RATE ?? 28),
-  loginHours: Number(env.LOGIN_HOURS ?? 12),
+  port: Number(str(env.PORT) ?? 4000),
+  databaseUrl: databaseUrl && !databaseUrl.includes('...') ? databaseUrl : undefined,
+  dataDir: str(env.DATA_DIR) ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../data/pgdata'),
+  frontendUrl: (str(env.FRONTEND_URL) ?? 'http://localhost:4000').replace(/\/$/, ''),
+  apiBaseUrl: (str(env.API_BASE_URL) ?? 'http://localhost:4000').replace(/\/$/, ''),
+  authSecret: authSecret ?? 'dev-only-secret-change-me-dev-only-secret',
+  adminSetupKey: str(env.ADMIN_SETUP_KEY),
+  cafeName: str(env.CAFE_NAME) ?? 'My Cafe',
+  timezone: str(env.CAFE_TIMEZONE) ?? 'Asia/Kolkata',
+  maxTaxRate: Number(str(env.MAX_TAX_RATE) ?? 28),
+  supabase: {
+    url: supabaseUrl,
+    serviceRoleKey,
+    // Legacy Supabase projects sign tokens with a shared secret; newer ones publish a JWKS instead.
+    jwtSecret: str(env.SUPABASE_JWT_SECRET),
+    // Staff type a username but Supabase Auth needs an email, so we derive one from this domain.
+    staffEmailDomain: str(env.STAFF_EMAIL_DOMAIN) ?? 'cafe.local',
+  },
 };

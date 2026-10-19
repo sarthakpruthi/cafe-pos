@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ApiError, get, patch, post } from '../shared/api';
+import { randomPassword } from '../shared/lib';
 import { ErrorNote, Loading, PageHeader } from '../shared/ui';
 import { Icon } from '../shared/icons';
 import { useAuth } from './auth';
@@ -60,7 +61,11 @@ export default function UsersPage() {
             </div>
             {reset && reset.id === u.id && (
               <div className="panel stack">
-                <label className="field"><span>New password (at least 8 characters)</span><input value={reset.password} onChange={(e) => setReset({ id: u.id, password: e.target.value })} /></label>
+                <label className="field"><span>New password (at least 8 characters)</span><input value={reset.password} autoCapitalize="none" autoCorrect="off" spellCheck={false} autoComplete="new-password" onChange={(e) => setReset({ id: u.id, password: e.target.value })} /></label>
+                <div className="row wrap gap">
+                  <button className="btn small" onClick={() => setReset({ id: u.id, password: randomPassword() })}><Icon name="sparkles" size={15} />Generate a strong password</button>
+                </div>
+                <p className="muted">Give it to them now — once saved it can’t be looked up again.</p>
                 <button className="btn primary" disabled={busy || reset.password.length < 8} onClick={() => run(() => patch(`/users/${u.id}`, { password: reset.password }), () => setReset(null))}>Save new password</button>
               </div>
             )}

@@ -5,6 +5,7 @@ import pg from 'pg';
 import { PGlite } from '@electric-sql/pglite';
 import { randomUUID } from 'node:crypto';
 import { broadcast, type Audience } from './realtime.js';
+import { config } from './config.js';
 
 export interface Q { query<T = any>(sql: string, params?: any[]): Promise<{ rows: T[] }>; }
 export type Emit = (type: string, payload: Record<string, unknown>, audience: Audience) => void;
@@ -13,9 +14,13 @@ let pool: pg.Pool | null = null;
 let lite: PGlite | null = null;
 
 /**
- * Supabase (and most hosted Postgres) require TLS; a local server usually does not.
- * Set `sslmode=disable` in the URL or `DATABASE_SSL=disable` to force it off,
- * and `sslmode=no-verify` / `DATABASE_SSL=no-verify` to skip certificate checks.
+ * Supabase (and most hosted Postgres) require TLS. Supabase signs with its own certificate
+ * authority, which Node does not trust out of the box, so by default we encrypt without verifying
+ * the certificate (what the Supabase docs do too). For full verification, download the project's CA
+ * (Supabase → Project Settings → Database → SSL Configuration) and point DATABASE_SSL_CA at it, or
+ * set DATABASE_SSL=verify to check against Node's built-in list.
+ *
+ * DATABASE_SSL / ?sslmode=  accept: disable | no-verify (default for remote) | verify-full.
  */
 function sslFor(url: string): pg.PoolConfig['ssl'] {
   let host = '';
@@ -25,12 +30,14 @@ function sslFor(url: string): pg.PoolConfig['ssl'] {
     host = u.hostname;
     mode = (u.searchParams.get('sslmode') ?? '').toLowerCase();
   } catch { /* not a standard URL — treat it as local */ }
-  const off = mode === 'disable' || process.env.DATABASE_SSL === 'disable';
-  if (off) return undefined;
+  const setting = (process.env.DATABASE_SSL ?? mode).toLowerCase();
+  if (setting === 'disable' || setting === 'off') return undefined;
   const isLocal = !host || host === 'localhost' || host === '127.0.0.1' || host === '::1';
-  if (isLocal && !mode) return undefined;
-  const noVerify = mode === 'no-verify' || process.env.DATABASE_SSL === 'no-verify';
-  return { rejectUnauthorized: !noVerify };
+  if (isLocal && !setting) return undefined;
+  // Strongest option: verify against the provider's own CA file.
+  if (process.env.DATABASE_SSL_CA) return { ca: fs.readFileSync(process.env.DATABASE_SSL_CA, 'utf8'), rejectUnauthorized: true };
+  if (setting === 'verify' || setting === 'verify-full' || setting === 'verify-ca') return { rejectUnauthorized: true };
+  return { rejectUnauthorized: false };
 }
 
 export async function initDb(opts: { url?: string; dataDir?: string }) {
@@ -44,6 +51,17 @@ export async function initDb(opts: { url?: string; dataDir?: string }) {
     await lite.waitReady;
   }
   await migrate();
+  await ensureDefaultCafe();
+}
+
+/**
+ * The single cafe that predates the `cafes` table. Its name and sign-in domain are kept in step
+ * with the settings so staff created before cafes existed can still sign in.
+ */
+async function ensureDefaultCafe() {
+  await db.query(
+    `UPDATE cafes SET name = $1, email_domain = $2, updated_at = now() WHERE is_default`,
+    [config.cafeName, config.supabase.staffEmailDomain]);
 }
 
 export const db: Q = {

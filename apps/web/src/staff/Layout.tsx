@@ -25,7 +25,7 @@ interface Toast { orderId: string; tableId: string; message: string; }
 const today = () => new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' });
 
 export default function StaffLayout() {
-  const { user, cafeName, logout } = useAuth();
+  const { user, cafeName, logout, token } = useAuth();
   const nav = useNavigate();
   const manager = user!.role === 'MANAGER';
   const base = manager ? '/manager' : '/staff';
@@ -45,7 +45,9 @@ export default function StaffLayout() {
   const loadNotes = useCallback(() => { get('/notifications?unread=true').then((r) => setNotes(r.notifications)).catch(() => {}); }, []);
   useEffect(loadNotes, [loadNotes]);
 
-  const live = useLive('/api/v1/events', (type, payload) => {
+  // EventSource cannot set headers, so the token rides in the query string. When it refreshes the
+  // URL changes and the stream reconnects on its own.
+  const live = useLive(token ? `/api/v1/events?token=${encodeURIComponent(token)}` : null, (type, payload) => {
     listeners.current.forEach((l) => l(type, payload));
     if (type === 'order.created') {
       setToasts((t) => t.some((x) => x.orderId === payload.orderId) ? t
@@ -64,10 +66,12 @@ export default function StaffLayout() {
 
   const links: { to: string; label: string; icon: IconName }[] = [
     { to: `${base}/tables`, label: 'Tables', icon: 'grid' },
+    { to: `${base}/account`, label: 'My account', icon: 'lock' },
     ...(manager ? [
       { to: '/manager/menu', label: 'Menu', icon: 'menu' as IconName },
       { to: '/manager/reports', label: 'Payments and reports', icon: 'wallet' as IconName },
       { to: '/manager/staff', label: 'Staff logins', icon: 'users' as IconName },
+      { to: '/manager/cafe', label: 'My cafe', icon: 'coffee' as IconName },
       { to: '/manager/qr-codes', label: 'QR codes', icon: 'qr' as IconName },
       { to: '/manager/audit', label: 'History', icon: 'clock' as IconName },
     ] : []),

@@ -2,6 +2,7 @@ import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { boot, client } from './helpers.js';
 import { db } from '../src/db.js';
+import { randomUUID } from 'node:crypto';
 
 let base = ''; let server: any;
 let mgr: ReturnType<typeof client>, staff: ReturnType<typeof client>, anon: ReturnType<typeof client>;
@@ -231,22 +232,32 @@ test('reports use server totals', async () => {
   assert.equal((await mgr.get(`/reports/daily-sales?date=${today}`)).status, 200);
 });
 
-test('security: login throttling and cross-origin writes', async () => {
-  const x = client(base);
-  for (let i = 0; i < 5; i++) assert.equal((await x.post('/auth/login', { username: 'staff', password: 'wrong' })).status, 401);
-  assert.equal((await x.post('/auth/login', { username: 'staff', password: 'password123' })).status, 429);
-  const r = await fetch(`${base}/auth/logout`, { method: 'POST', headers: { origin: 'https://evil.example', 'content-type': 'application/json' }, body: '{}' });
-  assert.equal(r.status, 403);
+test('security: staff routes need a valid Supabase token; cross-origin writes are refused', async () => {
+  // No token at all.
+  assert.equal((await fetch(`${base}/tables`)).status, 401);
+  // A token that is not a JWT, and a real token with a tampered signature.
+  assert.equal((await fetch(`${base}/tables`, { headers: { authorization: 'Bearer not.a.jwt' } })).status, 401);
+  const tampered = `${mgr.token().slice(0, -4)}AAAA`;
+  assert.equal((await fetch(`${base}/tables`, { headers: { authorization: `Bearer ${tampered}` } })).status, 401);
+  // Writes that announce an unknown website are refused before anything else happens.
+  const evil = await fetch(`${base}/notifications/read-all`, { method: 'POST', headers: { origin: 'https://evil.example', 'content-type': 'application/json' }, body: '{}' });
+  assert.equal(evil.status, 403);
+  // Switching a login off takes effect at once, even though the token has not expired.
+  const staffId = (await db.query(`SELECT id FROM users WHERE username='staff'`)).rows[0].id;
+  await db.query(`UPDATE users SET is_active=false WHERE id=$1`, [staffId]);
+  assert.equal((await fetch(`${base}/tables`, { headers: { authorization: `Bearer ${staff.token()}` } })).status, 401);
+  await db.query(`UPDATE users SET is_active=true WHERE id=$1`, [staffId]);
+  assert.equal((await fetch(`${base}/tables`, { headers: { authorization: `Bearer ${staff.token()}` } })).status, 200);
 });
 
 test('6-7. live event reaches manager AND staff; staff never get payment events; missed orders stay as unread notifications', async () => {
-  const listen = async (cookieClient: string) => {
+  const listen = async (bearer: string) => {
     const ctl = new AbortController(); let text = '';
-    const r = await fetch(`${base}/events`, { headers: { cookie: cookieClient }, signal: ctl.signal });
+    const r = await fetch(`${base}/events`, { headers: { authorization: `Bearer ${bearer}` }, signal: ctl.signal });
     (async () => { const rd = r.body!.getReader(); const d = new TextDecoder(); for (;;) { const { value, done } = await rd.read(); if (done) break; text += d.decode(value); } })().catch(() => {});
     return { stop: () => ctl.abort(), text: () => text };
   };
-  const m = await listen(mgr.cookie()); const s = await listen(staff.cookie());
+  const m = await listen(mgr.token()); const s = await listen(staff.token());
   await new Promise((r) => setTimeout(r, 400));
   const { c, sessionId } = await scan(tokens[0]);
   await order(c, sessionId, [{ menuItemId: chai, quantity: 1 }]);
@@ -258,4 +269,67 @@ test('6-7. live event reaches manager AND staff; staff never get payment events;
   // someone who was offline still finds the unread notification after reconnecting
   const n = (await staff.get('/notifications?unread=true')).body.notifications;
   assert.ok(n.some((x: any) => x.message.includes('Table 1')));
+});
+
+test('cafes: logins are scoped to one cafe, and the same username may exist in two cafes', async () => {
+  const other = (await db.query<{ id: string }>(
+    `INSERT INTO cafes (name, slug, email_domain) VALUES ('Second Cafe','second','second.cafe.local') RETURNING id`)).rows[0].id;
+  await db.query(
+    `INSERT INTO users (id, name, username, role, cafe_id) VALUES ($1,'Other Manager','manager','MANAGER',$2)`,
+    [randomUUID(), other]);
+
+  // What the login search box reads: both cafes, each with its own sign-in domain.
+  const cafes = (await anon.get('/public/cafes')).body.cafes as Array<{ name: string; emailDomain: string }>;
+  assert.ok(cafes.some((c) => c.name === 'Second Cafe' && c.emailDomain === 'second.cafe.local'));
+
+  // The second cafe's manager sees only their own people.
+  const otherMgr = client(base);
+  assert.equal(await otherMgr.login('manager', other), 200);
+  const theirs = (await otherMgr.get('/users')).body.users as Array<{ name: string }>;
+  assert.ok(theirs.length === 1 && theirs[0].name === 'Other Manager');
+
+  // The first cafe's manager does not see the second cafe's people.
+  const mine = (await mgr.get('/users')).body.users as Array<{ name: string }>;
+  assert.ok(!mine.some((u) => u.name === 'Other Manager'));
+
+  // The same username ("staff") is allowed in the second cafe.
+  assert.equal((await otherMgr.post('/users', { name: 'Second Staff', username: 'staff', password: 'password123', role: 'STAFF' })).status, 201);
+
+  // A manager cannot switch off a login that belongs to another cafe.
+  const outside = (await db.query<{ id: string }>(`SELECT id FROM users WHERE cafe_id=$1 AND username='staff'`, [other])).rows[0].id;
+  assert.equal((await mgr.patch(`/users/${outside}`, { isActive: false })).status, 404);
+});
+
+test('cafe: a manager sees and edits only their own cafe; there is no cafe list', async () => {
+  const defaultCafe = (await db.query<{ id: string }>(`SELECT id FROM cafes WHERE is_default`)).rows[0].id;
+  const mine = (await mgr.get('/cafe')).body.cafe;
+  assert.equal(mine.id, defaultCafe);
+  assert.equal(mine.emailDomain, 'cafe.local');
+
+  // A manager can rename their own cafe.
+  const renamed = await mgr.patch('/cafe', { name: 'TeaPot Test Cafe' });
+  assert.equal(renamed.status, 200);
+  assert.equal(renamed.body.cafe.name, 'TeaPot Test Cafe');
+
+  // Another cafe's manager operates only on their own cafe, untouched by the rename above.
+  const second = (await db.query<{ id: string }>(`SELECT id FROM cafes WHERE slug='second'`)).rows[0].id;
+  const otherMgr = client(base);
+  assert.equal(await otherMgr.login('manager', second), 200);
+  const theirs = (await otherMgr.get('/cafe')).body.cafe;
+  assert.equal(theirs.id, second);
+  assert.equal(theirs.name, 'Second Cafe');
+
+  // Managers cannot create or list cafes, and bad input is rejected.
+  assert.equal((await mgr.post('/cafes', { name: 'Nope Cafe' })).status, 404);
+  assert.equal((await mgr.get('/cafes')).status, 404);
+  assert.equal((await mgr.patch('/cafe', { name: '   ' })).status, 422);
+
+  // Staff can neither read nor change the cafe.
+  assert.equal((await staff.get('/cafe')).status, 403);
+  assert.equal((await staff.patch('/cafe', { name: 'Hacked' })).status, 403);
+});
+
+test('setup: the public setup page is off unless ADMIN_SETUP_KEY is set', async () => {
+  const r = await anon.post('/public/setup', { key: 'anything', name: 'Nope Cafe', managerName: 'N', username: 'nope', password: 'password123' });
+  assert.equal(r.status, 403);
 });

@@ -2,12 +2,20 @@ export class ApiError extends Error {
   constructor(public code: string, message: string, public details: any = {}, public status = 0) { super(message); }
 }
 
+// The signed-in staff member's Supabase access token, kept here so every request can attach it.
+let authToken: string | null = null;
+export function setAuthToken(token: string | null) { authToken = token; }
+
 export async function api<T = any>(method: string, path: string, body?: unknown, sessionToken?: string): Promise<T> {
   let res: Response;
   try {
     res = await fetch('/api/v1' + path, {
       method, credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json', ...(sessionToken ? { 'X-Session-Token': sessionToken } : {}) },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        ...(sessionToken ? { 'X-Session-Token': sessionToken } : {}),
+      },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch {

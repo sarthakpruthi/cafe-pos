@@ -3,13 +3,24 @@ import type { NextFunction, Request, Response } from 'express';
 import { config } from './config.js';
 import { db } from './db.js';
 import { AppError } from './errors.js';
+import { staffAuth } from './supabase.js';
 
-export interface AuthUser { id: string; name: string; role: 'MANAGER' | 'STAFF'; username: string; }
+export interface AuthUser { id: string; name: string; role: 'MANAGER' | 'STAFF'; username: string; cafeId: string; }
 declare global { namespace Express { interface Request { user?: AuthUser; id?: string; } } }
 
 const b64 = (s: string) => Buffer.from(s).toString('base64url');
 function sign(data: string) { return createHmac('sha256', config.authSecret).update(data).digest('base64url'); }
 
+/** Constant-time comparison for shared secrets (the public setup key). */
+export function secretsMatch(a: string, b: string) {
+  const x = Buffer.from(a); const y = Buffer.from(b);
+  return x.length === y.length && timingSafeEqual(x, y);
+}
+
+/**
+ * Signed tokens for *customers*: a QR scan issues one that is bound to a table session. Staff
+ * sign-in is handled by Supabase Auth (see ./supabase.ts) and uses JWTs instead.
+ */
 export function makeToken(payload: Record<string, unknown>, hours: number) {
   const body = b64(JSON.stringify({ ...payload, exp: Date.now() + hours * 3600_000 }));
   return `${body}.${sign(body)}`;
@@ -26,16 +37,24 @@ export function readToken<T = Record<string, any>>(token: string | undefined): T
   } catch { return null; }
 }
 
-export const COOKIE = 'cafe_auth';
-
-/** Loads the signed-in user (re-checked in the database every request, so deactivation is immediate). */
+/**
+ * Reads the Supabase access token, verifies it, then loads the matching profile row. The profile is
+ * re-read on every request so switching a login off takes effect immediately, before the token
+ * would have expired.
+ */
 export async function authenticate(req: Request, _res: Response, next: NextFunction) {
   try {
-    const t = readToken<{ uid: string }>(req.cookies?.[COOKIE]);
-    if (t) {
-      const r = await db.query<AuthUser & { is_active: boolean }>(
-        'SELECT id, name, username, role, is_active FROM users WHERE id = $1', [t.uid]);
-      if (r.rows[0]?.is_active) req.user = r.rows[0];
+    const header = req.headers.authorization;
+    const bearer = header?.startsWith('Bearer ') ? header.slice(7).trim() : undefined;
+    // Live updates use EventSource, which cannot set headers, so the token may arrive as ?token=.
+    const token = bearer || (typeof req.query.token === 'string' ? req.query.token : undefined);
+    if (token) {
+      const claims = await staffAuth.verify(token);
+      if (claims) {
+        const r = await db.query<AuthUser & { is_active: boolean }>(
+          'SELECT id, name, username, role, is_active, cafe_id AS "cafeId" FROM users WHERE id = $1', [claims.id]);
+        if (r.rows[0]?.is_active) req.user = r.rows[0];
+      }
     }
     next();
   } catch (e) { next(e); }
@@ -51,7 +70,10 @@ export function requireManager(req: Request, _res: Response, next: NextFunction)
   next();
 }
 
-/** CSRF defence for cookie auth: SameSite=Lax cookie plus an Origin check on every write. */
+/**
+ * Defence in depth for writes: tokens travel in a header (not a cookie) so cross-site requests
+ * cannot borrow a session, but we still reject writes that announce an unknown Origin.
+ */
 export function originCheck(req: Request, _res: Response, next: NextFunction) {
   if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
   const origin = req.headers.origin;
@@ -74,14 +96,3 @@ export function rateLimit(name: string, max: number, windowMs: number) {
   };
 }
 setInterval(() => { const now = Date.now(); for (const [k, v] of hits) if (v.reset < now) hits.delete(k); }, 60_000).unref();
-
-// ---- Login throttling: 5 wrong passwords locks that username+device for 10 minutes ----
-const fails = new Map<string, { n: number; until: number }>();
-export function loginLocked(key: string) { const f = fails.get(key); return !!f && f.until > Date.now(); }
-export function loginFailed(key: string) {
-  const f = fails.get(key) ?? { n: 0, until: 0 };
-  f.n += 1;
-  if (f.n >= 5) { f.until = Date.now() + 10 * 60_000; f.n = 0; }
-  fails.set(key, f);
-}
-export function loginOk(key: string) { fails.delete(key); }

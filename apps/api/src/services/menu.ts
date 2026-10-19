@@ -3,7 +3,7 @@ import { AppError } from '../errors.js';
 import { audit } from '../audit.js';
 import { config } from '../config.js';
 
-export interface Actor { id: string; role: 'MANAGER' | 'STAFF'; requestId?: string; }
+export interface Actor { id: string; role: 'MANAGER' | 'STAFF'; cafeId: string; requestId?: string; }
 
 const bump = async (c: Q, emit: Emit) => {
   const r = await c.query<{ value: string }>(

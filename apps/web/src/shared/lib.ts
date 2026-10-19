@@ -28,6 +28,16 @@ export const orderTone = (s: string) =>
 
 export const newKey = () => (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}-key`);
 
+/**
+ * A random, reasonably strong password. Look-alike characters (0/O, 1/l/I) are excluded so it
+ * stays easy to read aloud or retype on a phone.
+ */
+export function randomPassword(len = 14) {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+  const bytes = crypto.getRandomValues(new Uint32Array(len));
+  return Array.from(bytes, (n) => chars[n % chars.length]).join('');
+}
+
 /** Estimated totals for a cart (the server always recalculates the real ones). */
 export function estimate(lines: Array<{ price: string; taxRate: string | number; qty: number }>) {
   let sub = 0, tax = 0;
@@ -47,4 +57,5 @@ export const AUDIT_WORDS: Record<string, string> = {
   MENU_SECTION_HIDDEN: 'Menu section hidden', MENU_ITEM_CREATED: 'Menu item added', MENU_ITEM_UPDATED: 'Menu item changed',
   MENU_ITEM_PRICE_CHANGED: 'Menu item price changed', MENU_ITEM_HIDDEN: 'Menu item hidden', MENU_REORDERED: 'Menu order changed',
   USER_CREATED: 'Login created', USER_UPDATED: 'Login changed', USER_PASSWORD_RESET: 'Password reset', QR_REGENERATED: 'QR code replaced',
+  CAFE_CREATED: 'Cafe created', CAFE_UPDATED: 'Cafe details changed',
 };

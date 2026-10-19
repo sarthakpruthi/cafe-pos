@@ -1,11 +1,14 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { AuthProvider, LoginPage, RequireRole, useAuth } from './staff/auth';
+import SetupPage from './staff/SetupPage';
 import StaffLayout from './staff/Layout';
 import TablesPage from './staff/TablesPage';
 import TablePage from './staff/TablePage';
 import MenuManager from './staff/MenuManager';
 import Reports from './staff/Reports';
 import UsersPage from './staff/UsersPage';
+import AccountPage from './staff/AccountPage';
+import CafePage from './staff/CafePage';
 import QrPage from './staff/QrPage';
 import AuditPage from './staff/AuditPage';
 import CustomerPage from './customer/CustomerPage';
@@ -22,6 +25,7 @@ export default function App() {
       <Routes>
         <Route path="/t/:qrToken" element={<CustomerPage />} />
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/setup" element={<SetupPage />} />
         <Route path="/manager" element={<RequireRole role="MANAGER"><StaffLayout /></RequireRole>}>
           <Route index element={<Navigate to="tables" replace />} />
           <Route path="tables" element={<TablesPage />} />
@@ -31,11 +35,14 @@ export default function App() {
           <Route path="staff" element={<UsersPage />} />
           <Route path="qr-codes" element={<QrPage />} />
           <Route path="audit" element={<AuditPage />} />
+          <Route path="cafe" element={<CafePage />} />
+          <Route path="account" element={<AccountPage />} />
         </Route>
         <Route path="/staff" element={<RequireRole role="STAFF"><StaffLayout /></RequireRole>}>
           <Route index element={<Navigate to="tables" replace />} />
           <Route path="tables" element={<TablesPage />} />
           <Route path="tables/:tableId" element={<TablePage />} />
+          <Route path="account" element={<AccountPage />} />
         </Route>
         <Route path="*" element={<Home />} />
       </Routes>

@@ -1,13 +1,11 @@
 import { Router, type Request, type Response, type NextFunction, type RequestHandler } from 'express';
-import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { db } from './db.js';
 import { config } from './config.js';
 import { AppError } from './errors.js';
 import { addClient, openStream } from './realtime.js';
 import {
-  authenticate as _a, requireAuth, requireManager, rateLimit, makeToken, readToken, COOKIE,
-  loginLocked, loginFailed, loginOk,
+  authenticate as _a, requireAuth, requireManager, rateLimit, makeToken, readToken, secretsMatch,
 } from './auth.js';
 import * as menu from './services/menu.js';
 import * as orders from './services/orders.js';
@@ -18,7 +16,7 @@ import { withTx } from './db.js';
 const wrap = (fn: (req: Request, res: Response) => Promise<unknown>): RequestHandler =>
   (req, res, next) => { fn(req, res).catch(next); };
 
-const actor = (req: Request) => ({ id: req.user!.id, role: req.user!.role, requestId: req.id });
+const actor = (req: Request) => ({ id: req.user!.id, role: req.user!.role, cafeId: req.user!.cafeId, requestId: req.id });
 const role = (req: Request) => req.user!.role;
 const uuid = z.string().uuid();
 const parse = <T extends z.ZodTypeAny>(s: T, v: unknown): z.infer<T> => s.parse(v);
@@ -36,25 +34,52 @@ const reasonBody = z.object({ reason: z.string().max(300).optional() });
 export const router = Router();
 
 // ---------------------------------------------------------------- auth
-router.post('/auth/login', rateLimit('login', 30, 60_000), wrap(async (req, res) => {
-  const { username, password } = parse(z.object({ username: z.string().min(1).max(60), password: z.string().min(1).max(200) }), req.body);
-  const key = `${req.ip}:${username.toLowerCase()}`;
-  if (loginLocked(key)) throw new AppError('RATE_LIMITED', 'Too many wrong passwords. Please wait 10 minutes and try again.');
-  const u = (await db.query(`SELECT id, name, username, role, password_hash, is_active FROM users WHERE lower(username)=lower($1)`, [username.trim()])).rows[0];
-  const ok = u && u.is_active && await bcrypt.compare(password, u.password_hash);
-  if (!ok) { loginFailed(key); throw new AppError('LOGIN_FAILED', 'That username or password is not correct.'); }
-  loginOk(key);
-  await db.query(`UPDATE users SET last_login_at=now() WHERE id=$1`, [u.id]);
-  res.cookie(COOKIE, makeToken({ uid: u.id }, config.loginHours), {
-    httpOnly: true, sameSite: 'lax', secure: config.isProd, maxAge: config.loginHours * 3600_000, path: '/',
-  });
-  res.json({ user: { id: u.id, name: u.name, role: u.role }, cafeName: config.cafeName });
+// Signing in happens in the browser against Supabase Auth; here we only read the access token.
+router.get('/auth/me', requireAuth, wrap(async (req, res) => {
+  // There is no server-side login event any more, so record roughly when this person last used the
+  // app (at most every half hour) to keep "last signed in" useful on the Staff logins page.
+  await db.query(
+    `UPDATE users SET last_login_at=now() WHERE id=$1 AND (last_login_at IS NULL OR last_login_at < now() - interval '30 minutes')`,
+    [req.user!.id]);
+  const cafe = (await db.query<{ name: string }>(
+    `SELECT name FROM cafes WHERE id=$1`, [req.user!.cafeId])).rows[0];
+  res.json({ user: { id: req.user!.id, name: req.user!.name, role: req.user!.role, username: req.user!.username }, cafeName: cafe?.name ?? config.cafeName });
 }));
-router.post('/auth/logout', (_req, res) => { res.clearCookie(COOKIE, { path: '/' }); res.status(204).end(); });
-router.get('/auth/me', requireAuth, (req, res) => res.json({ user: { id: req.user!.id, name: req.user!.name, role: req.user!.role }, cafeName: config.cafeName }));
 
 // ---------------------------------------------------------------- public (customer QR)
 const pub = rateLimit('public', 240, 60_000);
+
+/**
+ * Cafes that can be signed in to. Not a secret: the login screen needs the cafe's name and its
+ * sign-in domain so it can build the address Supabase Auth expects. No token required.
+ */
+router.get('/public/cafes', rateLimit('cafes', 120, 60_000), wrap(async (req, res) => {
+  const q = String(req.query.q ?? '').trim();
+  const cafes = (await db.query(
+    `SELECT id, name, slug, email_domain AS "emailDomain" FROM cafes
+     WHERE is_active AND (btrim($1::text) = '' OR name ILIKE $2 OR slug ILIKE $2)
+     ORDER BY name LIMIT 20`, [q, `%${q}%`])).rows;
+  res.json({ cafes });
+}));
+
+/**
+ * Public cafe setup (no sign-in). Creates a cafe and its first manager. Gated by the
+ * ADMIN_SETUP_KEY setting so only the operator can do it; off entirely when that is unset.
+ */
+router.post('/public/setup', rateLimit('setup', 10, 60_000), wrap(async (req, res) => {
+  const b = parse(z.object({
+    key: z.string().max(200),
+    name: z.string().trim().min(1, 'Please enter the cafe name.').max(120),
+    managerName: z.string().trim().min(1, "Please enter the manager's name.").max(80),
+    username: z.string().trim().min(3, 'Username needs at least 3 letters.').max(60),
+    password: z.string().max(200),
+  }), req.body);
+  if (!config.adminSetupKey)
+    throw new AppError('FORBIDDEN', 'Setting up a cafe from the web is switched off. Set ADMIN_SETUP_KEY in .env (or run: npm run cafe).');
+  if (!secretsMatch(b.key, config.adminSetupKey))
+    throw new AppError('FORBIDDEN', 'That setup key is not correct.');
+  res.status(201).json({ cafe: await admin.provisionCafe(b, null, req.id) });
+}));
 
 const QR_FORMAT = /^[A-Za-z0-9_-]{16,64}$/;
 async function tableByToken(token: string) {
@@ -247,8 +272,15 @@ router.get('/qr-codes', requireManager, wrap(async (_req, res) => res.json({ cod
 router.get('/tables/:tableId/qr', requireManager, wrap(async (req, res) => res.json(await admin.tableQr(id(req, 'tableId')))));
 router.post('/tables/:tableId/regenerate-qr', requireManager, wrap(async (req, res) => { await admin.regenerateQr(actor(req), id(req, 'tableId')); ok(res); }));
 
+// ---- the manager's own cafe. Scoped to the caller, so nobody sees another cafe.
+router.get('/cafe', requireManager, wrap(async (req, res) => res.json({ cafe: await admin.getCafe(req.user!.cafeId) })));
+router.patch('/cafe', requireManager, wrap(async (req, res) => {
+  const b = parse(z.object({ name: z.string().trim().min(1, 'Please enter the cafe name.').max(120) }).strict(), req.body);
+  res.json({ cafe: await admin.updateCafe(actor(req), b) });
+}));
+
 // ---- users & audit
-router.get('/users', requireManager, wrap(async (_req, res) => res.json({ users: await admin.listUsers() })));
+router.get('/users', requireManager, wrap(async (req, res) => res.json({ users: await admin.listUsers(req.user!.cafeId) })));
 router.post('/users', requireManager, wrap(async (req, res) => {
   const b = parse(z.object({ name: z.string().trim().min(1, 'Please enter a name.').max(80), username: z.string().trim().min(3, 'Username needs at least 3 letters.').max(60), password: z.string().max(200), role: z.enum(['MANAGER', 'STAFF']).default('STAFF') }), req.body);
   res.status(201).json({ id: await admin.createUser(actor(req), b) });
