@@ -38,8 +38,10 @@
     "RealtimeHub": { "type": "durable-object", "storage": "sqlite" }
   },
   // Postgres connection pooling for Workers. Create it once with:
-  //   npx wrangler hyperdrive create cafe-db --connection-string "postgresql://...supabase..."
-  // then paste the id below. For local `wrangler dev`, add a `localConnectionString`.
+  //   npx wrangler hyperdrive create cafe-db --caching-disabled \
+  //     --connection-string "postgresql://...supabase..."
+  // then paste the id below. Caching is disabled on purpose: Hyperdrive caches SELECT results for
+  // 60s by default and does not invalidate them on writes, which would show stale orders and bills.
   "hyperdrive": [
     { "binding": "HYPERDRIVE", "id": "<your-hyperdrive-id>" }
   ],

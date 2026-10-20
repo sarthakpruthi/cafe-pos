@@ -49,13 +49,15 @@ free allowance. When the last screen closes the object goes idle.
 
 ## Prerequisites
 
+- Node.js 20.12 or newer.
 - A Cloudflare account (the **free** plan is fine) and `npx wrangler login` once.
 - A **Supabase** project (already used for staff sign-in) for Postgres + Auth.
 
-## 1. Install and build
+## 1. Install and check the build inputs
 
 ```bash
 npm install
+npx wrangler login
 ```
 
 The web bundle is built from the repo-root `.env` (Vite's `envDir`), so set these **before**
@@ -67,67 +69,116 @@ VITE_SUPABASE_ANON_KEY=...
 VITE_STAFF_EMAIL_DOMAIN=cafe.local
 ```
 
+`VITE_STAFF_EMAIL_DOMAIN` must equal the Worker's `STAFF_EMAIL_DOMAIN` (both `cafe.local` by
+default), and `CAFE_NAME`/`CAFE_TIMEZONE` in `.env` should match the same values in `wrangler.jsonc`.
+
 ## 2. Create the Hyperdrive config
 
 Hyperdrive pools the Postgres connection for the Worker. Create it once against your Supabase
 connection string (Supabase → Project Settings → Database → **Session pooler**, port 5432):
 
 ```bash
-npx wrangler hyperdrive create cafe-db --connection-string "postgresql://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres"
+npx wrangler hyperdrive create cafe-db --caching-disabled \
+  --connection-string "postgresql://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require"
 ```
 
-Copy the `id` it prints into `wrangler.jsonc`, replacing `<your-hyperdrive-id>`.
+`--caching-disabled` matters: Hyperdrive otherwise caches `SELECT` results for 60 seconds and does
+**not** invalidate them on writes, so a customer would see a stale order list or bill right after
+ordering. Copy the `id` it prints into `wrangler.jsonc`, replacing `<your-hyperdrive-id>`.
+
+If you already created it without the flag, turn caching off with:
+
+```bash
+npx wrangler hyperdrive update <id> --caching-disabled
+```
 
 ## 3. Fill in the non-secret settings
 
-In `wrangler.jsonc` under `vars`, set `SUPABASE_URL` to your project URL. Leave `FRONTEND_URL` and
-`API_BASE_URL` for step 6.
+In `wrangler.jsonc` under `vars`, set `SUPABASE_URL` to your project URL (e.g.
+`https://abcdefgh.supabase.co`). Leave `FRONTEND_URL` and `API_BASE_URL` for step 5.
 
-## 4. Add the secrets
-
-```bash
-npx wrangler secret put AUTH_SECRET                   # long random value; signs customer QR tokens
-npx wrangler secret put SUPABASE_SERVICE_ROLE_KEY     # server-only key, used to manage staff logins
-npx wrangler secret put SUPABASE_JWT_SECRET           # only for older projects; otherwise skip
-npx wrangler secret put ADMIN_SETUP_KEY               # optional; lets /setup create the first manager
-```
-
-## 5. Create the database schema
-
-A Worker has no filesystem, so migrations do **not** run there. Apply them from your machine, which
-does have one, using the same migration files:
-
-```bash
-DATABASE_URL="postgresql://...supabase..." npm run migrate
-```
-
-Safe to run repeatedly. Re-run it after deploying any change that adds a file to `database/migrations`.
-
-## 6. Deploy, then point the app at itself
+## 4. Deploy once to get the URL
 
 ```bash
 npm run deploy        # builds the web app, then `wrangler deploy`
 ```
 
-Now copy the `*.workers.dev` URL that Wrangler prints into **both** `FRONTEND_URL` and `API_BASE_URL`
-in `wrangler.jsonc` (or use a custom domain from step 8), and deploy again:
+Wrangler prints the Worker URL, e.g. `https://cafe-ordering.<subdomain>.workers.dev`. This first
+deploy can be incomplete (secrets and the final URLs are still missing) — it exists so later
+commands and the second deploy have a Worker to target. Copy the URL exactly.
+
+## 5. Add the secrets and point the app at itself
+
+```bash
+npx wrangler secret put AUTH_SECRET                    # 32+ random chars; signs customer QR tokens
+npx wrangler secret put SUPABASE_SERVICE_ROLE_KEY      # server-only key, used to manage staff logins
+npx wrangler secret put SUPABASE_JWT_SECRET            # only for older Supabase projects; otherwise skip
+npx wrangler secret put ADMIN_SETUP_KEY                # optional; enables /setup for extra cafes
+```
+
+Generate `AUTH_SECRET` with:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
+```
+
+Then put the URL from step 4 into **both** `FRONTEND_URL` and `API_BASE_URL` in `wrangler.jsonc`
+(or use a custom domain from step 8), and deploy again:
 
 ```bash
 npm run deploy
 ```
 
-Do this **before printing any table QR codes** — the printed link is baked into the QR image.
+They must match the browser origin exactly. Do this **before printing any table QR codes** — the
+printed link is baked into the QR image.
 
-## 7. First manager
+## 6. Create the database schema
 
-Open `https://<your-url>/setup` and enter the `ADMIN_SETUP_KEY`. Once a manager exists you can clear
-`ADMIN_SETUP_KEY` if you want the setup page switched off.
+A Worker has no filesystem, so migrations do **not** run there. Apply them from your machine, which
+does have one, using the same migration files:
+
+```bash
+DATABASE_URL="postgresql://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require" \
+  npm run migrate
+```
+
+Safe to run repeatedly. Re-run it after deploying any change that adds a file to `database/migrations`.
+This also renames the default cafe to `CAFE_NAME` and sets its sign-in domain to `STAFF_EMAIL_DOMAIN`.
+
+## 7. Create the tables, sample menu and first manager
+
+The web `/setup` page creates an **additional** cafe, not its tables. For the first (default) cafe,
+run the setup script against the production database:
+
+```bash
+DATABASE_URL="postgresql://...supabase..." \
+MANAGER_USERNAME=manager MANAGER_PASSWORD='choose-a-strong-one' TABLE_COUNT=10 \
+  npm run setup
+```
+
+This creates table rows with QR tokens, a sample menu (edit or delete it from the Menu page), and a
+manager login. Sign in at `/login` by picking the cafe whose name matches `CAFE_NAME` (default
+**The TeaPot Cafe**) and typing that username and password. Additional cafes can be created later at
+`/setup` with `ADMIN_SETUP_KEY`, or with `npm run cafe`; note that tables and the menu are currently
+shared by all cafes.
 
 ## 8. Custom domain (recommended)
 
 A custom domain gives a stable `FRONTEND_URL` that never changes when the Worker is redeployed. Add
 it in the dashboard (Workers & Pages → your Worker → Settings → Domains & Routes), set
 `FRONTEND_URL` and `API_BASE_URL` to it, redeploy, then (re)print the QR codes.
+
+## Verify
+
+```bash
+curl -sS https://<your-url>/api/v1/public/cafes        # {"cafes":[...]} — proves Worker + Hyperdrive + Express
+curl -sS https://<your-url>/api/v1/public/menu | head -c 200   # proves the schema was migrated
+npx wrangler tail                                      # live logs while you use the app
+```
+
+Then open the site, sign in at `/login`, open **QR codes**, and scan one with a phone. A test order
+should appear on the staff screen without a refresh. If it does, the SSE path through the Durable
+Object is working.
 
 ## Local preview
 
@@ -146,7 +197,10 @@ CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE="postgresql://..." npm 
 - **Realtime stays SSE**, now fanned out by a Durable Object instead of an in-process `Set`. That is
   what makes it correct across Worker isolates: a stream opened on one isolate still sees events
   published from another.
-- **Migrations are manual.** Run `npm run migrate` (step 5) after changing `database/migrations`.
+- **Migrations are manual.** Run `npm run migrate` (step 6) after changing `database/migrations`.
+- **Hyperdrive caching must stay off.** It is disabled with `--caching-disabled` when the config is
+  created (step 2). With default caching, reads can be up to 60 seconds stale and are not invalidated
+  by writes — orders, bills and staff permissions would look wrong right after a change.
 - **Rate limiting is per isolate.** `apps/api/src/auth.ts` keeps counters in memory, so the limits
   are best-effort once Cloudflare runs more than one isolate. Fine for a single cafe.
 - **SSE bypasses the Express middleware.** The two `*/events` routes are answered by the Worker, so
@@ -165,9 +219,12 @@ CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE="postgresql://..." npm 
 | --- | --- |
 | `Worker has access to ... env.HYPERDRIVE (<your-hyperdrive-id>)` | You have not replaced the placeholder id (step 2). |
 | Local `wrangler dev` refuses to start, mentioning `localConnectionString` | Set `CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE`. |
-| `relation "..." does not exist` | Migrations were never applied — run `npm run migrate` (step 5). |
+| `relation "..." does not exist` | Migrations were never applied — run `npm run migrate` (step 6). |
 | `require_streams(...) is not a function` at startup | The `iconv-lite` alias in `wrangler.jsonc` was removed. |
-| `AUTH_SECRET must be set to a long random value in production.` | `npx wrangler secret put AUTH_SECRET` (step 4). |
+| `AUTH_SECRET must be set to a long random value in production.` | `npx wrangler secret put AUTH_SECRET` (step 5). |
+| `SUPABASE_URL must be set in production` | Set `SUPABASE_URL` under `vars` in `wrangler.jsonc` (step 3) and redeploy. |
+| Order status or bill looks stale for up to a minute | Hyperdrive query caching is on. Recreate it with `--caching-disabled` (step 2). |
+| QR codes page is empty | No `cafe_tables` rows: run `npm run setup` with `TABLE_COUNT` (step 7), or create tables in the database. |
 | `This request came from an unknown website.` | `FRONTEND_URL`/`API_BASE_URL` do not match the browser origin. |
 | QR links point at the wrong host | `FRONTEND_URL` was not updated before printing. Regenerate the QR codes after fixing it. |
 | Live updates stop after a while | Client disconnects: `EventSource` reconnects on its own and the screens resync from the API. No data is lost. |
